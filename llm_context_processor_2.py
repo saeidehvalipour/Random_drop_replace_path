@@ -29,6 +29,7 @@ class LLMContextProcessor:
         return logger
 
     def process_df_with_llm(self, df, max_iterations, k):
+        # remember that we have template_prompt we are just upodating context appended into it in each iteration
         responses_per_row = []
         response_times_per_row = []
         prompts_per_row = []
@@ -47,7 +48,7 @@ class LLMContextProcessor:
             iteration_pmid_contexts = []
             iteration_pmid_changes = []
 
-            # Log new row processing
+            # Log new row processing, convienience to read .txt file
             self.logger.info("=" * 80)
             self.logger.info(f"Processing Row {idx}/{len(df)}: Source={source_cui}, Target={target_cui}")
             self.logger.info("=" * 80)
@@ -63,13 +64,13 @@ class LLMContextProcessor:
                 self.logger.info(f"Iteration {iteration + 1}/{max_iterations}: Full prompt sent to LLM:")
                 self.logger.info(prompt)
 
-                # Measure LLM response time
+                # Measure only LLM response time per Iteration, not per row; just sum htem up if need per row.
                 try:
                     start_llm_time = time.time()
                     response = vllm_get_response(prompt)
                     response_time = time.time() - start_llm_time
                     iteration_response_times.append(response_time)
-                    self.logger.info(f"Response received for Row {idx}, Iteration {iteration + 1}: {response[:100]}...")
+                    self.logger.info(f"Response received for Row {idx}, Iteration {iteration + 1}: {response}")
                     self.logger.info(f"Response time: {response_time:.2f} seconds")
 
                     # Log the full response using the logger
@@ -91,6 +92,7 @@ class LLMContextProcessor:
                     pmid_change = self._replace_pmid(edge_to_modify, selected_pmids, path_context_pmids, used_pmids)
                     if pmid_change["added"] is None:
                         self.logger.info(f"Not Enough PMIDs to be found for Row {idx}. Stopping early.")
+                        # no need to log as Error but need to drop that path if there is not enough pmid (most probable scenario for Sasha's case_study due to not covering space pmid's)
                         break
                     iteration_pmid_changes.append(pmid_change)
                     self._log_pmid_change(pmid_change)
@@ -115,11 +117,12 @@ class LLMContextProcessor:
         return df
 
     def _replace_pmid(self, edge, selected_pmids, path_context_pmids, used_pmids):
-        pmid_to_drop = random.choice(selected_pmids[edge])  # Randomly drop a PMID
+        # Select a PMID to drop strategically
+        pmid_to_drop = self._select_pmid_to_drop(selected_pmids[edge])
         remaining_pmids = [pmid for pmid in selected_pmids[edge] if pmid != pmid_to_drop]
         pmid_list = path_context_pmids[edge]  # Full list of PMIDs for this edge
 
-        # Find the next PMID to replace
+        # Find the next PMID to replace due to they are already positioned in sorted manner
         for pmid in pmid_list:
             if pmid not in used_pmids[edge]:
                 selected_pmids[edge] = remaining_pmids + [pmid]
@@ -129,8 +132,12 @@ class LLMContextProcessor:
         selected_pmids[edge] = remaining_pmids + [pmid_to_drop]
         return {"edge": edge, "dropped": pmid_to_drop, "added": None}
 
+    def _select_pmid_to_drop(self, pmids):
+        # Placeholder for strategic selection logic
+        # Currently selects randomly, but you can replace this with your logic
+        return random.choice(pmids)
+
     def _log_pmid_change(self, pmid_change):
-        
         if pmid_change["added"]:
             self.logger.info(
                 f"Replaced PMID {pmid_change['dropped']} with {pmid_change['added']} in edge {pmid_change['edge']}"
@@ -152,6 +159,7 @@ class LLMContextProcessor:
                         self.logger.error(f"No abstract found for PMID: {pmid}")
                         raise RuntimeError(f"No abstract found for PMID: {pmid}")
                 except KeyError:
+                    # sent_db sometimes play around by not finding that particular pmid
                     self.logger.error(f"PMID {pmid} not found in the database.")
                     raise RuntimeError(f"PMID {pmid} not found in the database.")
 
